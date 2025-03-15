@@ -5,3 +5,5 @@
 ### Установка
 ```bash
 pip install -r requirements.txt
+
+Файл результатов: vacancies_analysis.json
