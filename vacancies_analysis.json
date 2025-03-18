@@ -1,18 +1,22 @@
 {
     "total_vacancies": 100,
-    "average_salary": 124472.0,
+    "average_salary": 150272.0,
     "skills": {
         "python": {
-            "count": 68,
-            "percentage": 68.0
+            "count": 71,
+            "percentage": 71.0
         },
         "django": {
             "count": 8,
             "percentage": 8.0
         },
         "flask": {
-            "count": 5,
-            "percentage": 5.0
+            "count": 4,
+            "percentage": 4.0
+        },
+        "sqlalchemy": {
+            "count": 1,
+            "percentage": 1.0
         }
     }
 }
