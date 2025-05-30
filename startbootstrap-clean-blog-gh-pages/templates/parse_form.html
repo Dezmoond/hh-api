@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}Парсинг мероприятий{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+    <h1 class="mb-4">Парсинг мероприятий</h1>
+    
+    <form method="POST" action="{{ url_for('parse_events') }}">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h4>Выберите площадки</h4>
+            </div>
+            <div class="card-body">
+                {% for venue in venues %}
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" 
+                           id="venue-{{ venue.id }}" name="venues" value="{{ venue.id }}" checked>
+                    <label class="form-check-label" for="venue-{{ venue.id }}">
+                        {{ venue.name }}
+                    </label>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        
+        <div class="card mb-4">
+            <div class="card-header">
+                <h4>Диапазон дат (необязательно)</h4>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="start_date" class="form-label">Дата начала</label>
+                        <input type="date" class="form-control" id="start_date" name="start_date">
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="end_date" class="form-label">Дата окончания</label>
+                        <input type="date" class="form-control" id="end_date" name="end_date">
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <button type="submit" class="btn btn-primary btn-lg">Найти мероприятия</button>
+    </form>
+</div>
+{% endblock %}

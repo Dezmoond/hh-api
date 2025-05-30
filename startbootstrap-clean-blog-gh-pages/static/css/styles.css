@@ -10796,3 +10796,6 @@ header.masthead .post-heading .meta a {
     font-size: 2.25rem;
   }
 }
+a.show-more-link {
+    background-color: cadetblue;
+}

@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block title %}Результаты парсинга{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+    <h1 class="mb-4">Результаты парсинга</h1>
+
+    <!-- Фильтр по площадкам -->
+    <div class="mb-4">
+        <h4>Сортировка по площадкам:</h4>
+        <div class="btn-group flex-wrap" role="group">
+            <button type="button" class="btn btn-outline-primary venue-filter active" data-venue="all">
+                Все площадки ({{ events_by_venue.values()|sum(attribute='count') }})
+            </button>
+            {% for venue_name, venue_data in events_by_venue.items() %}
+            <button type="button" class="btn btn-outline-primary venue-filter"
+                    data-venue="{{ venue_data.id }}">
+                {{ venue_name }} ({{ venue_data.count }})
+            </button>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Результаты -->
+    <div id="all-venues">
+        {% for venue_name, venue_data in events_by_venue.items() %}
+        <div class="venue-section" id="venue-{{ venue_data.id }}">
+            <h2 class="border-bottom pb-2 mb-3">{{ venue_name }}</h2>
+
+            {% if venue_data.events %}
+            <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+                {% for event in venue_data.events %}
+                <div class="col">
+                    <div class="card h-100">
+                        {% if event.image %}
+                        <img src="{{ event.image }}" class="card-img-top" alt="{{ event.title }}" style="height: 200px; object-fit: cover;">
+                        {% endif %}
+                        <div class="card-body">
+                            <h5 class="card-title">{{ event.title }}</h5>
+                            <p class="card-text text-muted small mb-2">{{ event.dates|join(', ') }}</p>
+
+                            <!-- Описание с выпадающим списком -->
+                            <div class="description-container">
+                                {% if event.description|length > 150 %}
+                                <div class="short-description">
+                                    {{ event.description[:150] }}...
+                                    <a href="#" class="show-more-link" data-target="desc-{{ loop.index }}">Показать полностью</a>
+                                </div>
+                                <div class="full-description collapse" id="desc-{{ loop.index }}">
+                                    {{ event.description }}
+                                    <a href="#" class="show-less-link" data-target="desc-{{ loop.index }}">Свернуть</a>
+                                </div>
+                                {% else %}
+                                <div class="full-description">
+                                    {{ event.description }}
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="card-footer bg-white">
+                            <a href="{{ event.ticket_link }}" class="btn btn-sm btn-primary" target="_blank">
+                                Купить билет
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="alert alert-info">Мероприятий не найдено</div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Фильтрация по площадкам
+document.querySelectorAll('.venue-filter').forEach(btn => {
+    btn.addEventListener('click', function() {
+        const venueId = this.dataset.venue;
+
+        // Обновляем активную кнопку
+        document.querySelectorAll('.venue-filter').forEach(b => {
+            b.classList.toggle('active', b === this);
+        });
+
+        // Показываем/скрываем секции
+        document.querySelectorAll('.venue-section').forEach(section => {
+            section.style.display = venueId === 'all' ||
+                                  section.id === `venue-${venueId}` ? 'block' : 'none';
+        });
+    });
+});
+
+// Обработка выпадающих описаний
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('show-more-link')) {
+        e.preventDefault();
+        const targetId = e.target.getAttribute('data-target');
+        const fullDesc = document.getElementById(targetId);
+        const shortDesc = e.target.closest('.short-description');
+
+        shortDesc.style.display = 'none';
+        fullDesc.classList.add('show');
+    }
+
+    if (e.target.classList.contains('show-less-link')) {
+        e.preventDefault();
+        const targetId = e.target.getAttribute('data-target');
+        const fullDesc = document.getElementById(targetId);
+        const shortDesc = fullDesc.previousElementSibling;
+
+        fullDesc.classList.remove('show');
+        shortDesc.style.display = 'block';
+    }
+});
+</script>
+{% endblock %}
+
+{% block styles %}
+<style>
+.description-container {
+    position: relative;
+}
+.short-description {
+    display: block;
+}
+.full-description {
+    display: none;
+}
+.full-description.show {
+    display: block;
+}
+.show-more-link, .show-less-link {
+    color: #0d6efd;
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: 0.9em;
+}
+.show-less-link {
+    display: block;
+    margin-top: 10px;
+}
+.card-text {
+    margin-bottom: 0.5rem;
+}
+</style>
+{% endblock %}
