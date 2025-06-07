@@ -290,10 +290,10 @@ def parse_single_venue(url):
             events.append({
                 'title': title,
                 'description': description,
-                'dates': dates,  # list of date strings
+                'dates': dates,
                 'ticket_link': ticket_link,
                 'image': image_url,
-                'venue': url.split('/')[-1]  # This is just the slug, not the full venue name
+                'venue': url.split('/')[-1]
             })
 
         return events
