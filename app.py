@@ -1,16 +1,24 @@
+# app.py
+
 from flask import Flask, render_template, request, redirect, url_for
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 import json
 import re
-import sqlite3
+# import sqlite3 # УДАЛИТЬ: больше не используем sqlite3 напрямую
+
+# Импорты для SQLAlchemy
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from db_events_orm import Base, Venue, Event, \
+    create_db_tables  # Импортируем наши новые модели и функцию создания таблиц
 
 app = Flask(__name__, template_folder="startbootstrap-clean-blog-gh-pages/templates",
             static_folder="startbootstrap-clean-blog-gh-pages/static")
 
-# Список площадок для парсинга
-VENUES = [
+# Список площадок для парсинга (остается в коде для удобства инициализации)
+VENUES_CONFIG = [  # Переименовал, чтобы не путать с моделью Venue
     {"id": "filarmoniya", "name": "Филармония", "url": "https://quicktickets.ru/chita-filarmoniya"},
     {"id": "uzory", "name": "Забайкальские узоры", "url": "https://quicktickets.ru/chita-zabajkalskie-uzory"},
     {"id": "rodina", "name": "КЗ Родина", "url": "https://quicktickets.ru/chita-kz-rodina"},
@@ -24,28 +32,41 @@ RU_MONTHS = {
     "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12
 }
 
-DATABASE = 'events.db'
+# --- НАСТРОЙКА SQLAlchemy ---
+DATABASE_URL_EVENTS = 'sqlite:///events_orm.db'  # Та же БД, что и в db_events_orm.py
+engine_events = create_engine(DATABASE_URL_EVENTS)
+Session_events = sessionmaker(bind=engine_events)
 
 
-def init_db():
-    """Инициализирует базу данных SQLite."""
-    with sqlite3.connect(DATABASE) as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                description TEXT,
-                date TEXT NOT NULL,         -- Storing original date string (e.g., "15 мая 19:00")
-                ticket_link TEXT,
-                image_url TEXT,
-                venue_name TEXT NOT NULL,
-                original_venue_id TEXT NOT NULL,
-                parsed_datetime TEXT,       -- New column to store sortable datetime (ISO format: YYYY-MM-DDTHH:MM:SS)
-                unique_key TEXT UNIQUE      -- Ensures no duplicate events
-            )
-        ''')
-        conn.commit()
+# --- Инициализация БД и заполнение начальными данными (площадками) ---
+def init_app_db_and_venues():
+    """
+    Инициализирует базу данных для приложения и заполняет таблицу venues
+    данными из VENUES_CONFIG, если их там нет.
+    """
+    create_db_tables()  # Создаем таблицы (из db_events_orm.py)
+
+    session = Session_events()
+    try:
+        for venue_data in VENUES_CONFIG:
+            # Проверяем, существует ли уже площадка
+            existing_venue = session.query(Venue).filter_by(original_id=venue_data['id']).first()
+            if not existing_venue:
+                new_venue = Venue(
+                    name=venue_data['name'],
+                    original_id=venue_data['id'],
+                    url=venue_data['url']
+                )
+                session.add(new_venue)
+                print(f"Добавлена площадка: {new_venue.name}")
+            else:
+                print(f"Площадка '{existing_venue.name}' уже существует.")
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        print(f"Ошибка при инициализации площадок: {e}")
+    finally:
+        session.close()
 
 
 def parse_date_string_to_datetime(date_str):
@@ -64,18 +85,21 @@ def parse_date_string_to_datetime(date_str):
         # Попробуем текущий год
         try:
             event_dt = datetime(current_year, month, day, hour, minute)
-        except ValueError:  # Если день/месяц невалидны для текущего года (например, 29 февраля в невисокосном году)
-            # Если текущий год не подходит, попробуем следующий. Это для случаев типа "29 февраля" в невисокосном году
-            # или если дата уже прошла в этом году, а значит, она могла быть в прошлом.
+        except ValueError:
+            # Если текущий год не подходит (например, 29 февраля в невисокосном году),
+            # или если дата уже прошла в этом году, но это может быть дата следующего года,
+            # пробуем следующий год.
             event_dt = datetime(current_year + 1, month, day, hour, minute)
 
-            # Корректировка года, чтобы дата была ближайшей к текущей дате
-        # Если дата в будущем более чем на 6 месяцев, скорее всего это прошлый год
-        if event_dt > datetime.now() and (event_dt - datetime.now()).days > 180:
-            event_dt = event_dt.replace(year=event_dt.year - 1)
-        # Если дата в прошлом более чем на 6 месяцев, скорее всего это следующий год
-        elif event_dt < datetime.now() and (datetime.now() - event_dt).days > 180:
-            event_dt = event_dt.replace(year=event_dt.year + 1)
+        # Корректировка года, чтобы дата была ближайшей к текущей дате
+        # Если дата в будущем более чем на 6 месяцев, скорее всего, это прошлый год.
+        # Это более сложно, чем просто проверка на "прошлое".
+        # Лучше: если событие УЖЕ ПРОШЛО в текущем году, то это, вероятно, в следующем году
+        if event_dt < datetime.now():
+            # Если дата в этом году уже прошла, то, возможно, это дата следующего года
+            potential_next_year_dt = event_dt.replace(year=event_dt.year + 1)
+            if potential_next_year_dt >= datetime.now():  # если следующего года дата в будущем
+                event_dt = potential_next_year_dt
 
         return event_dt
     except Exception as e:
@@ -83,85 +107,97 @@ def parse_date_string_to_datetime(date_str):
         return None
 
 
-def add_event_to_db(event):
-    """Добавляет мероприятие в базу данных, избегая дубликатов."""
-    with sqlite3.connect(DATABASE) as conn:
-        cursor = conn.cursor()
-
-        # Используем только первую дату для записи в БД и создания unique_key
-        if not event['dates']:
-            print(f"Событие '{event['title']}' не имеет даты. Пропускаем добавление в БД.")
-            return
-
-        first_date_str = event['dates'][0]
-
-        # Парсим дату в объект datetime для сортировки и создания unique_key
+def add_event_to_db(event_data):
+    """Добавляет мероприятие в базу данных с помощью SQLAlchemy, избегая дубликатов."""
+    session = Session_events()
+    try:
+        first_date_str = event_data['dates'][0]
         parsed_dt = parse_date_string_to_datetime(first_date_str)
         if not parsed_dt:
-            print(f"Не удалось распарсить дату для события '{event['title']}'. Пропускаем добавление в БД.")
+            print(f"Не удалось распарсить дату для события '{event_data['title']}'. Пропускаем.")
             return
 
-        # Уникальный ключ теперь включает форматированную дату и площадку
-        unique_key = f"{event['title']}-{parsed_dt.strftime('%Y-%m-%d %H:%M')}-{event['venue_name']}"
+        # Находим площадку по original_id (из VENUES_CONFIG)
+        venue_obj = session.query(Venue).filter_by(original_id=event_data['venue_id']).first()
+        if not venue_obj:
+            print(
+                f"Не найдена площадка с original_id '{event_data['venue_id']}'. Пропускаем событие '{event_data['title']}'.")
+            return
 
-        try:
-            cursor.execute('''
-                INSERT INTO events (title, description, date, ticket_link, image_url, venue_name, original_venue_id, parsed_datetime, unique_key)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (event['title'], event['description'], first_date_str,
-                  event['ticket_link'], event['image'], event['venue_name'],
-                  event['venue_id'], parsed_dt.isoformat(), unique_key))  # Сохраняем в ISO формате для сортировки
-            conn.commit()
-            # print(f"Событие '{event['title']}' на дату '{first_date_str}' успешно добавлено.")
-        except sqlite3.IntegrityError:
-            pass  # Не выводим сообщение о пропуске, если это нормально
-        except IndexError:
-            print(f"Событие '{event['title']}' не имеет даты. Пропускаем.")
+        # Проверяем на дубликаты используя уникальный ключ/уникальный constrain
+        # UniqueConstraint в модели Event уже покроет это, но можем явно проверить, если хотим
+        # более гранулярный контроль или логирование.
+        # Создадим уникальный ключ для проверки (хотя constrain в БД это сделает)
+        # UniqueConstraint: ('title', 'parsed_datetime', 'venue_id')
+        existing_event = session.query(Event).filter(
+            Event.title == event_data['title'],
+            Event.parsed_datetime == parsed_dt,
+            Event.venue_id == venue_obj.id
+        ).first()
+
+        if existing_event:
+            # print(f"Событие '{event_data['title']}' на '{first_date_str}' ({event_data['venue_name']}) уже существует. Пропускаем.")
+            return
+
+        new_event = Event(
+            title=event_data['title'],
+            description=event_data['description'],
+            original_date_str=first_date_str,
+            parsed_datetime=parsed_dt,
+            ticket_link=event_data['ticket_link'],
+            image_url=event_data['image'],
+            venue_id=venue_obj.id,  # Используем ID объекта Venue
+            # Создаем уникальный ключ для отладки, но основной уникальности добьемся через UniqueConstraint
+            unique_key=f"{event_data['title']}-{parsed_dt.strftime('%Y-%m-%d %H:%M')}-{venue_obj.original_id}"
+        )
+        session.add(new_event)
+        session.commit()
+        # print(f"Событие '{event_data['title']}' на дату '{first_date_str}' успешно добавлено.")
+    except Exception as e:
+        session.rollback()
+        print(f"Ошибка при добавлении события '{event_data['title']}' в БД: {e}")
+    finally:
+        session.close()
 
 
 def get_events_from_db(start_dt=None, end_dt=None):
     """
     Извлекает мероприятия из базы данных, фильтруя по диапазону дат и сортируя.
     start_dt и end_dt должны быть объектами datetime или None.
-    Если start_dt и end_dt не указаны, возвращает ВСЕ мероприятия из базы.
     """
-    with sqlite3.connect(DATABASE) as conn:
-        cursor = conn.cursor()
+    session = Session_events()
+    try:
+        query = session.query(Event).join(Venue)  # Делаем JOIN с Venue для получения имени площадки
 
-        query = 'SELECT title, description, date, ticket_link, image_url, venue_name, parsed_datetime FROM events WHERE 1=1 '
-        params = []
-
-        # Добавляем фильтр по диапазону дат ТОЛЬКО если даты указаны
         if start_dt:
-            query += 'AND parsed_datetime >= ? '
-            params.append(start_dt.isoformat())
+            query = query.filter(Event.parsed_datetime >= start_dt)
 
         if end_dt:
             # Для end_dt включаем все события до конца дня
             end_of_day = end_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
-            query += 'AND parsed_datetime <= ? '
-            params.append(end_of_day.isoformat())
+            query = query.filter(Event.parsed_datetime <= end_of_day)
 
-        # Всегда сортируем по дате
-        query += 'ORDER BY parsed_datetime ASC'
+        query = query.order_by(Event.parsed_datetime.asc())
 
-        cursor.execute(query, params)
-        db_events = cursor.fetchall()
+        db_events = query.all()
 
         events_list = []
-        for event_data in db_events:
-            title, description, original_date_str, ticket_link, image_url, venue_name, parsed_datetime_iso = event_data
-
+        for event_obj in db_events:
             events_list.append({
-                'title': title,
-                'description': description,
-                'date': original_date_str,  # Сохраняем оригинальную строку для отображения
-                'ticket_link': ticket_link,
-                'image': image_url,
-                'venue_name': venue_name
+                'title': event_obj.title,
+                'description': event_obj.description,
+                'date': event_obj.original_date_str,
+                'ticket_link': event_obj.ticket_link,
+                'image': event_obj.image_url,
+                'venue_name': event_obj.venue.name,  # Доступ к имени площадки через связь
+                'venue_id': event_obj.venue.original_id  # ID площадки из VENUES_CONFIG
             })
-
         return events_list
+    except Exception as e:
+        print(f"Ошибка при извлечении событий из БД: {e}")
+        return []
+    finally:
+        session.close()
 
 
 @app.route("/")
@@ -202,7 +238,7 @@ def event_history():
     history_by_venue = {}
     for event in all_db_events:
         venue_name = event['venue_name']
-        venue_id = slugify_filter(venue_name)
+        venue_id = event['venue_id']  # Используем уже полученный venue_id из БД
         if venue_name not in history_by_venue:
             history_by_venue[venue_name] = {'events': [], 'count': 0, 'id': venue_id}
         history_by_venue[venue_name]['events'].append(event)
@@ -210,49 +246,64 @@ def event_history():
 
     return render_template('history.html',
                            history_by_venue=history_by_venue,
-                           selected_start_date=start_date_str,  # Передаем выбранные даты для отображения в форме
+                           selected_start_date=start_date_str,
                            selected_end_date=end_date_str)
 
 
 @app.route('/parse', methods=['GET', 'POST'])
 def parse_events():
     if request.method == 'POST':
-        selected_venues = request.form.getlist('venues')
+        selected_venues_ids = request.form.getlist('venues')  # Получаем original_id
         start_date_str = request.form.get('start_date')
         end_date_str = request.form.get('end_date')
 
         start_dt = datetime.strptime(start_date_str, '%Y-%m-%d') if start_date_str else None
         end_dt = datetime.strptime(end_date_str, '%Y-%m-%d') if end_date_str else None
 
-        events_by_venue = {}
+        events_by_venue_display = {}  # Для отображения на parse_events.html
 
-        for venue in VENUES:
-            if venue['id'] in selected_venues:
-                events = parse_single_venue(venue['url'])
+        for venue_config in VENUES_CONFIG:
+            if venue_config['id'] in selected_venues_ids:
+                parsed_events_raw = parse_single_venue(venue_config['url'])
 
-                # Добавляем название площадки и ID к каждому событию
-                for event in events:
-                    event['venue_name'] = venue['name']
-                    event['venue_id'] = venue['id']
-                    # Добавляем событие в БД, если оно еще не там (автоматически избегает дубликатов)
-                    add_event_to_db(event)
+                current_venue_events_for_display = []
 
-                # Фильтруем события, которые будут отображены на текущей странице 'parse_events.html'
-                if start_dt or end_dt:
-                    events = filter_events_by_date(events, start_dt, end_dt)  # Передаем datetime объекты
+                for event_raw in parsed_events_raw:
+                    # Добавляем название площадки и ID к каждому событию для удобства
+                    # и для передачи в add_event_to_db
+                    event_raw['venue_name'] = venue_config['name']
+                    event_raw['venue_id'] = venue_config['id']  # Используем original_id
+
+                    # Добавляем событие в БД (ORM-версия)
+                    add_event_to_db(event_raw)
+
+                    # Фильтруем события для отображения на текущей странице 'parse_events.html'
+                    # Если даты не заданы, все парсенные события пойдут в отображение
+                    # Иначе, только те, что в диапазоне
+                    if not start_dt and not end_dt:
+                        current_venue_events_for_display.append(event_raw)
+                    else:
+                        # Проверяем каждую дату события, так как у события может быть несколько дат
+                        for date_str in event_raw['dates']:
+                            event_dt = parse_date_string_to_datetime(date_str)
+                            if event_dt and \
+                                    (not start_dt or event_dt.date() >= start_dt.date()) and \
+                                    (not end_dt or event_dt.date() <= end_dt.date()):
+                                current_venue_events_for_display.append(event_raw)
+                                break  # Добавляем событие один раз, если хоть одна дата подходит
 
                 # Группируем мероприятия по названию площадки для отображения
-                events_by_venue[venue['name']] = {
-                    'events': events,
-                    'count': len(events),
-                    'id': venue['id']
+                events_by_venue_display[venue_config['name']] = {
+                    'events': current_venue_events_for_display,
+                    'count': len(current_venue_events_for_display),
+                    'id': venue_config['id']
                 }
 
         return render_template('parse_events.html',
-                               events_by_venue=events_by_venue,
-                               selected_venues=selected_venues)
+                               events_by_venue=events_by_venue_display,
+                               selected_venues=selected_venues_ids)
 
-    return render_template('parse_form.html', venues=VENUES)
+    return render_template('parse_form.html', venues=VENUES_CONFIG)  # Передаем VENUES_CONFIG
 
 
 def parse_single_venue(url):
@@ -276,6 +327,10 @@ def parse_single_venue(url):
             sessions = event_div.find('div', class_='sessions')
             if sessions:
                 dates = [date.get_text(strip=True) for date in sessions.find_all('span', class_='underline')]
+            if not dates:  # Если дат нет, берем из основного блока
+                date_tag = event_div.find('p', class_='a')
+                if date_tag:
+                    dates.append(date_tag.get_text(strip=True))
 
             ticket_link = ''
             ticket_tag = event_div.find('p', class_='b')
@@ -290,10 +345,10 @@ def parse_single_venue(url):
             events.append({
                 'title': title,
                 'description': description,
-                'dates': dates,
+                'dates': dates,  # Список дат
                 'ticket_link': ticket_link,
                 'image': image_url,
-                'venue': url.split('/')[-1]
+                # 'venue': url.split('/')[-1] # Это больше не нужно, venue_id будет добавляться позже
             })
 
         return events
@@ -302,27 +357,8 @@ def parse_single_venue(url):
         return []
 
 
-# Обновлена для приема datetime объектов для сравнения
-def filter_events_by_date(events, start_dt=None, end_dt=None):
-    """Фильтрует мероприятия по дате"""
-    if not start_dt and not end_dt:
-        return events
-
-    filtered = []
-
-    for event in events:
-        for date_str in event['dates']:
-            event_dt = parse_date_string_to_datetime(date_str)
-            if not event_dt:
-                continue  # Пропускаем события с непарсируемой датой
-
-            # Проверяем попадает ли дата в диапазон (только дата, без времени для диапазона)
-            if (not start_dt or event_dt.date() >= start_dt.date()) and \
-                    (not end_dt or event_dt.date() <= end_dt.date()):
-                filtered.append(event)
-                break  # Если событие подходит под фильтр, нет смысла проверять другие даты для этого события
-    return filtered
-
+# Удаляем filter_events_by_date, так как фильтрация теперь происходит на уровне БД в get_events_from_db
+# И в parse_events при отображении.
 
 # Создаем фильтр slugify без использования secure_key
 @app.template_filter('slugify')
@@ -336,5 +372,5 @@ def slugify_filter(text):
 
 
 if __name__ == "__main__":
-    init_db()  # Инициализируем БД при запуске приложения
+    init_app_db_and_venues()  # Инициализируем БД и площадки при запуске приложения
     app.run(debug=True)
